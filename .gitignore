@@ -1,0 +1,8 @@
+build-*/
+build/
+tmp/
+.cache/
+**/msc/
+/compile_commands.json
+hude-dev/
+tinyalsa/

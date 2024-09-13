@@ -1,0 +1,25 @@
+PROJECT( ifly-speech )
+
+SET( IFLY_ARCH x64 )
+
+IF( TOOLCHAIN )
+    IF( ${TOOLCHAIN} STREQUAL "clang" )
+        SET( IFLY_ARCH x64 )
+    ELSEIF( ${TOOLCHAIN} STREQUAL "arm" )
+        SET( IFLY_ARCH arm )
+    ELSEIF( ${TOOLCHAIN} STREQUAL "aarch64" )
+        SET( IFLY_ARCH aarch64 )
+    ELSEIF( ${TOOLCHAIN} STREQUAL "riscv" )
+        SET( IFLY_ARCH riscv )
+    ELSEIF( ${TOOLCHAIN} STREQUAL "mips" )
+        SET( IFLY_ARCH mips )
+    ELSE()
+        SET( IFLY_ARCH x86 )
+    ENDIF()
+ENDIF()
+
+add_library( msc   SHARED IMPORTED GLOBAL )
+add_library( w_ivw SHARED IMPORTED GLOBAL )
+
+set_target_properties( msc   PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_LIST_DIR}/libs/${IFLY_ARCH}/libmsc.so )
+set_target_properties( w_ivw PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_LIST_DIR}/libs/${IFLY_ARCH}/libw_ivw.so )

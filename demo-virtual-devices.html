@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>智居泛化控制示例</title>
+        <meta charset="UTF-8">
+        <!-- import CSS -->
+        <link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+        <!-- import Vue before Element -->
+        <script src="https://unpkg.com/vue@2/dist/vue.js"></script>
+        <!-- import JavaScript -->
+        <script src="https://unpkg.com/element-ui/lib/index.js"></script>
+    </head>
+    <style type="text/css">
+        .text-code {
+            padding: 12px;
+            border: 1px solid #F0F0F0;
+            background-color: #FAFAFA;
+        }
+        .body-dialog {
+            max-height: 400px;
+            overflow: auto;
+            margin-left: 80px;
+        }
+        .tag-dialog {
+            width: 60px;
+            margin-left: 12px;
+            margin-right: 12px;
+        }
+        .item-card {
+            margin: 8px;
+        }
+        .power-on {
+            margin: 8px;
+            background-color: #d4ecfc;
+        }
+        .power-off {
+            margin: 8px;
+        }
+    </style>
+    <body>
+        <div id="app" style="max-width: 1368px; margin: 0 auto;">
+            <el-container>
+                <el-header>
+                    <h1 style="text-align: center;">智居泛化控制示例</h1>
+                </el-header>
+                <el-main>
+                    <el-divider></el-divider>
+                    <el-row v-if="demoState">
+                        <el-col :span="6" v-for="(item, index) in homeConfig.devices" :key="index">
+                            <el-card :class="['box-card', (item.device.state.power)? 'power-on' : 'power-off']" style="margin: 8px;">
+                                <el-tooltip class="item" effect="dark" :content="homeConfig.model[item.device.model].describe" placement="top-start">
+                                    <h3>{{item.name}}<el-tag style="margin-left: 20px;" type="info" size="mini">{{item.local}}</el-tag></h3>
+                                </el-tooltip>
+                                <div class="item-card">
+                                    <p>ID: <el-tag style="margin-left: 20px;" type="info" effect="plain">{{item.id}}</el-tag></p>
+                                </div>
+                                <div class="item-card">
+                                    <el-switch v-model="item.device.state.power" inactive-text="电源："></el-switch>
+                                </div>
+                                <div class="item-card">
+                                    <p v-if="item.device.model === '001'">-</p>
+                                    <div class="block" v-else>
+                                        <span class="demonstration">档位：</span>
+                                        <el-input-number v-model="item.device.state.level" :min="getLevel(item).min" :max="getLevel(item).max" label="描述文字" size="mini" />
+                                    </div>
+                                </div>
+                            </el-card>
+                        </el-col>
+                    </el-row>
+                    <div v-if="demoState" style="height: 20px;"></div>
+                    <el-row>
+                        <el-col :span="24">
+                            <div style="max-height: 600px; overflow: auto;">
+                                <el-collapse v-model="activeNames" @change="onChangeCollapse">
+                                    <el-collapse-item v-for="(item, index) in history" :key="index" :name="index">
+                                        <template slot="title">
+                                            <div>
+                                                <el-tag :type="(item.owner == 'USER')? 'warning' : 'success'" class="tag-dialog">{{item.owner}}</el-tag>
+                                                <span>{{item.content}}</span>
+                                            </div>
+                                        </template>
+                                        <div class="body-dialog text-code">
+                                            <code><pre>{{JSON.stringify(item.payload, null, 8)}}</pre></code>
+                                        </div>
+                                    </el-collapse-item>
+                                </el-collapse>
+                            </div>
+                        </el-col>
+                    </el-row>
+                    <el-divider></el-divider>
+                    <el-row :gutter="8">
+                        <el-col :span="2">
+                            <el-button plain icon="el-icon-s-tools" @click="() => { showConfig = true;}">配置</el-button>
+                        </el-col>
+                        <el-col :span="4" style="padding: 10px 10px;">
+                            <el-tooltip class="item" effect="dark" content="打开实时状态后，可以针对提取的控制意图列表进一步生成控制指令。当然这也会消耗更多大语音模型的Token成本。" placement="top-start">
+                                <el-switch v-model="demoState" inactive-text="实时状态：" style="margin-left: 10px;"></el-switch>
+                            </el-tooltip>
+                        </el-col>
+                        <el-col :span="2">
+                            <el-select v-model="local" placeholder="你的位置">
+                                <el-option v-for="(item, index) in homeConfig.layout" :key="index" :label="item" :value="item"> </el-option>
+                            </el-select>
+                        </el-col>
+                        <el-col :span="16" v-loading="state.online != 0">
+                            <el-input v-model="instruct" placeholder="输入控制要求，例如：“小牛，天黑了。”">
+                                <el-button plain icon="el-icon-right" slot="append" @click="onInstruct"></el-button>
+                            </el-input>
+                        </el-col>
+                    </el-row>
+                </el-main>
+            </el-container>
+            <el-drawer title="配置 | 设备列表与物模型" :visible.sync="showConfig" direction="ltr" size="50%" :before-close="onCloseConfig" :wrapper-closable="false">
+                <el-input class="text-code" type="textarea" autosize placeholder="请输入内容" v-model="tmpConfig"></el-input>
+            </el-drawer>
+        </div>
+    </body>
+    <script>
+        String.prototype.format = function (...args) {
+            return this.replace(/\{(\d+)\}/g, function (match, index) {
+            return args[index] !== undefined ? args[index] : match;
+            });
+        };
+
+        const topic_smarthome = "llm/smarthome";
+        const topic_ping = "default/ping";
+        const access_token = "123456"
+        const url = 'wss://{0}/agent/smarthome-gpt/llm/stream'.format(window.location.hostname)
+
+        var homeConfig = {
+            "did": "did-woeiru9w2e3rwedfrs",
+            "layout": [ '客厅', '卧室', '厨房', '卫生间' ],
+            "model": {
+                "001": {
+                    "name": "switch",
+                    "describe": "开关设备，可开关电源。",
+                    "property": {
+                        "power": {
+                            "type": "bool",
+                            "range": [true, false]
+                        }
+                    },
+                },
+                "002": {
+                    "name": "LED-lamp",
+                    "describe": "LED调光灯，用于照明，可开关，可调节亮度。",
+                    "property": {
+                        "power": {
+                            "type": "bool",
+                            "range": [true, false]
+                        },
+                        "level": {
+                            "type": "uint",
+                            "min": 1,
+                            "max": 255
+                        },
+                    },
+                },
+                "003": {
+                    "name": "fan",
+                    "describe": "电风扇，通风散热，支持开关和风速调节。",
+                    "property": {
+                        "power": {
+                            "type": "bool",
+                            "range": [true, false]
+                        },
+                        "level": {
+                            "type": "uint",
+                            "min": 1,
+                            "max": 4
+                        },
+                    },
+                },
+                "004": {
+                    "name": "fan",
+                    "describe": "空调，调节室温，支持开关和温度调节。",
+                    "property": {
+                        "power": {
+                            "type": "bool",
+                            "range": [true, false]
+                        },
+                        "level": {
+                            "type": "uint",
+                            "min": 15,
+                            "max": 30
+                        },
+                    },
+                },
+                "005": {
+                    "name": "extractor",
+                    "describe": "油烟机，厨房油烟风力排污，支持开关和风速调节。",
+                    "property": {
+                        "power": {
+                            "type": "bool",
+                            "range": [true, false]
+                        },
+                        "level": {
+                            "type": "uint",
+                            "min": 1,
+                            "max": 3
+                        },
+                    },
+                },
+            },
+            "devices": [
+                {
+                    "id": "dev-1",
+                    "name": "可调光照明灯",
+                    "local": "客厅",
+                    "device": {
+                        "model": "002",
+                        "state": {
+                            "power": true,
+                            "level": 128,
+                        }
+                    }
+                },
+                {
+                    "id": "dev-2",
+                    "name": "照明灯",
+                    "local": "卫生间",
+                    "device": {
+                        "model": "001",
+                        "state": {
+                            "power": false
+                        }
+                    }
+                },
+                {
+                    "id": "dev-3",
+                    "name": "照明灯",
+                    "local": "厨房",
+                    "device": {
+                        "model": "001",
+                        "state": {
+                            "power": true
+                        }
+                    }
+                },
+                {
+                    "id": "dev-4",
+                    "name": "照明灯",
+                    "local": "卧室",
+                    "device": {
+                        "model": "001",
+                        "state": {
+                            "power": false
+                        }
+                    }
+                },
+                {
+                    "id": "dev-5",
+                    "name": "电源插座",
+                    "local": "客厅",
+                    "device": {
+                        "model": "001",
+                        "state": {
+                            "power": false
+                        }
+                    }
+                },
+                {
+                    "id": "dev-6",
+                    "name": "空调",
+                    "local": "客厅",
+                    "device": {
+                        "model": "004",
+                        "state": {
+                            "power": false,
+                            "level": 20,
+                        }
+                    }
+                },
+                {
+                    "id": "dev-7",
+                    "name": "空调",
+                    "local": "卧室",
+                    "device": {
+                        "model": "004",
+                        "state": {
+                            "power": false,
+                            "level": 26,
+                        }
+                    }
+                },
+                {
+                    "id": "dev-8",
+                    "name": "油烟机",
+                    "local": "厨房",
+                    "device": {
+                        "model": "005",
+                        "state": {
+                            "power": true,
+                            "level": 2,
+                        }
+                    }
+                },
+            ],
+        }
+
+        const _chat_template = [
+            {
+                owner: "USER",
+                content: "小牛，开灯。",
+                payload: {
+                    "topic": "llm/smarthome",
+                    "rid": "did-woeiru9w2e3rwedfrs",
+                    "payload": {
+                        "page_id": "did-woeiru9w2e3rwedfrs",
+                        "question": "开灯",
+                        "local": "客厅",
+                        "instruct": false,
+                        "home": {
+                            "model": homeConfig.model,
+                            "devices": homeConfig.devices,
+                            "layout": homeConfig.layout,
+                        },
+                    }
+                }
+            },
+            {
+                owner: "AI",
+                content: "正在打开客厅调光灯。",
+                payload: {
+                    "ret": 0,
+                    "intent": {
+                        "type": "intent",
+                        "result": "正在打开客厅照明灯。"
+                    },
+                    "instructs": [
+                        {
+                            "id": "dev-2",
+                            "state": {
+                                    "power": true
+                            },
+                            "summary": "打开客厅照明灯"
+                        }
+                    ]
+                }
+            },
+        ];
+
+        var _data = {
+            homeConfig: homeConfig,
+            socket: null,
+            interval: null,
+            instruct: "",
+            activeNames: null,
+            showConfig: false,
+            local: "客厅",
+            tmpConfig: "",
+            demoState: false,
+
+            state: {
+                online: 0,
+            },
+            history: [
+                _chat_template[0], _chat_template[1],
+            ],
+        };
+
+        var Main = {
+            data() { return _data; },
+            computed: {},
+            methods: {
+                controlDevices(instructs) {
+                    const ds = {}
+                    for(var i = 0; i < homeConfig.devices.length; i++) {
+                        let dev = homeConfig.devices[i];
+                        ds[dev.id] = { idx: i, obj: dev };
+                    }
+
+                    instructs.map((ins) => {
+                        target = ds[ins.id]
+
+                        if(target != undefined) {
+                            for(let k in ins.state) {
+                                target.obj.device.state[k] = ins.state[k]
+                            }
+
+                            this.$set(this.homeConfig.devices, target.idx, target.obj)
+                        }
+                    })
+                },
+
+                startWS(url, instruct, local) {
+                    this.state.online = 0;
+
+                    // 创建websocket连接
+                    var socket = new WebSocket(url)
+
+                    // 当连接打开时触发
+                    socket.onopen = () => {
+                        this.socket = socket;
+                        this.state.online = 0;
+                        console.log("WebSocket连接已打开");
+                        this.sendInstruct(instruct, local);
+                    };
+
+                    // 当连接关闭时触发
+                    socket.onclose = () => {
+                        console.log("WebSocket连接已关闭");
+                        this.state.online = 0;
+                        this.socket = null;
+                    };
+
+                    // 当接收到消息时触发
+                    socket.onmessage = (event) => {
+                        var receivedData = event.data;
+                        console.log("接收到的消息：" + receivedData);
+
+                        var obj = JSON.parse(receivedData);
+
+                        // 更新内容
+                        if( obj.payload.finish == false ) {
+                            if( obj.payload.data.type === 'token' ) {
+                                this.history.push({
+                                    owner: "AI",
+                                    content: obj.payload.data.token.result,
+                                    payload: {}
+                                })
+                            } else {
+                                console.log("接收到其它流式状态：" + receivedData);
+                            }
+                        } else {
+                            if( obj.topic === topic_smarthome ) {
+                                item = this.history.pop();
+                                item.payload = obj.payload.data.active;
+                                this.history.push(item)
+                                if( item.payload.hasOwnProperty('instructs') ) {
+                                    this.controlDevices(item.payload.instructs)
+                                }
+                            } else {
+                                console.log("接收到心跳回复：" + receivedData);
+                            }
+                        }
+
+                        while(this.history.length > 8) {
+                            this.history.shift();
+                        }
+                    };
+                },
+
+                // 发送消息
+                sendInstruct(instruct, local ) {
+                    this.state.online = 1;
+
+                    var req = {
+                        "topic": topic_smarthome,
+                        "rid": homeConfig.did,
+                        "payload": {
+                            "page_id": homeConfig.did,
+                            "question": instruct,
+                            "local": local,
+                            "instruct": this.demoState,
+                            "home": {
+                                "model": homeConfig.model,
+                                "devices": homeConfig.devices,
+                                "layout": homeConfig.layout,
+                            },
+                        }
+                    }
+
+                    this.history.push({
+                        owner: "USER",
+                        content: instruct,
+                        payload: req,
+                    })
+
+                    // 发送问答请求到websocket服务器
+                    const payload = JSON.stringify(req);
+                    this.socket.send(payload);
+                    console.log("发送请求：" + payload);
+
+                    this.instruct = ""
+                },
+                getLevel(dev) { return homeConfig.model[dev.device.model].property.level; },
+                onChangeCollapse(val) { console.log(val); },
+                onInstruct() { this.startWS(url, this.instruct, this.local); },
+                onOpenConfig() { this.showConfig = true; },
+                onCloseConfig(done) { tmp = JSON.parse(this.tmpConfig); homeConfig = tmp; done(); },
+            },
+            mounted() {
+                var did = localStorage.getItem('dialog_id');
+                if (did) {
+                    homeConfig.did = did;
+                } else {
+                    homeConfig.did = "did-{0}".format(Math.floor(Math.random() * 9999));
+                    localStorage.setItem('dialog_id', homeConfig.did);
+                }
+
+                this.tmpConfig = JSON.stringify(homeConfig, null, 8);
+            }
+        };
+        var Ctor = Vue.extend(Main)
+        new Ctor().$mount('#app')
+    </script>
+</html>
+
